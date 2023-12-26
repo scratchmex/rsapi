@@ -13,6 +13,7 @@
     "artifacts": "yarn workspaces foreach -A --no-private run artifacts",
     "bench": "lerna run bench --concurrency 1 --stream --no-prefix",
     "build": "yarn workspaces foreach -A --no-private -j 1 run build",
+    "watch": "yarn workspaces foreach -A --no-private -j 1 run watch",
     "lint": "true",
     "test": "true",
     "format": "true",

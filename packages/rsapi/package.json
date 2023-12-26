@@ -32,6 +32,7 @@
     "artifacts": "napi artifacts  -d ../../artifacts",
     "build": "napi build --platform --release",
     "build:debug": "napi build --platform",
+    "watch": "cargo watch -s 'yarn build:debug' --why -i 'packages/rsapi/*index*'",
     "version": "napi version"
   },
   "gitHead": "388449dd337290a6e69ad3f3c8b5134c91f7445a"
