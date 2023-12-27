@@ -73,6 +73,8 @@ pub fn init_logger(js_logging_fn: JsFunction) -> Result<()> {
     let _ = log::set_logger(&LOGGER);
     log::set_max_level(log::LevelFilter::Debug);
 
+    log::info!("how does this log look like in the electron terminal?");
+
     Ok(())
 }
 

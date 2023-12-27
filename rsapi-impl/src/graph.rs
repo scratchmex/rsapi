@@ -526,9 +526,10 @@ impl Graph {
                 }
             };
             tasks.push(async move {
-                let content = fs::read(full_file_path).await?;
+                let content = fs::read(&full_file_path).await?;
                 // stage 1.1: md5 metadata
                 let md5checksum = md5_hexdigest(&content);
+                log::info!("checksum for {} is {}", full_file_path.display(), md5checksum);
                 // stage 1.2: encryption
                 let encrypted = self.encrypt_content(&content)?;
                 if encrypted.len() > 10 * 1024 * 1024 {
@@ -539,6 +540,7 @@ impl Graph {
                         encrypted.len() as f64 / (1024.0 * 1024.0)
                     );
                 }
+                log::info!("uploading {} as temp file", &full_file_path.display());
                 let remote_temp_url = client.upload_tempfile(encrypted, progress_callback).await?;
                 let encrypted_file_path = self.encrypt_filename(&file_path)?;
                 Result::Ok((encrypted_file_path, remote_temp_url, md5checksum))

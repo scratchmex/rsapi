@@ -15,17 +15,18 @@ static mut TEMP_CREDENTIAL: Option<TempCredential> = None;
 static mut HTTPS_PROXY: Option<String> = None;
 
 // API URL base
-static mut URL_BASE: &str = "https://api-dev.logseq.com/file-sync/";
-static mut BUCKET: &str = "logseq-file-sync-bucket";
-static mut REGION: &str = "us-east-2";
-
-const URL_BASE_DEV: &str = "https://api-dev.logseq.com/file-sync/";
+const URL_BASE_DEV: &str = "http://localhost:8000/file-sync/";
 const BUCKET_DEV: &str = "logseq-file-sync-bucket";
-const REGION_DEV: &str = "us-east-2";
+const REGION_DEV: &str = "http://localhost:8080";
 
 const URL_BASE_PROD: &str = "https://api.logseq.com/file-sync/";
 const BUCKET_PROD: &str = "logseq-file-sync-bucket-prod";
 const REGION_PROD: &str = "us-east-1";
+
+static mut URL_BASE: &str = URL_BASE_DEV;
+static mut BUCKET: &str = BUCKET_DEV;
+static mut REGION: &str = REGION_DEV;
+
 
 fn url_base() -> &'static str {
     unsafe { URL_BASE }
@@ -173,9 +174,8 @@ impl SyncClient {
         let resp = self
             .client
             .post(url_base().to_owned() + "create_graph")
-            .body(payload.to_string())
+            .json(&payload)
             .bearer_auth(&self.auth_token)
-            .header("Content-Type", "application/octet-stream")
             .send()
             .await?;
         let graph: types::Graph = resp.json().await?;
@@ -185,6 +185,26 @@ impl SyncClient {
         }
     }
 
+    pub async fn get_txid(&self) -> Result<u64> {
+        let payload = json!({ "GraphUUID": self.graph_uuid });
+        let resp = self
+            .client
+            .post(url_base().to_owned() + "get_txid")
+            .json(&payload)
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let res = resp.json::<serde_json::Value>().await?;
+
+        res
+            .get("TXId")
+            .map(|x| x.as_u64())
+            .flatten()
+            .ok_or(SyncError::Custom("txid is not a usize".to_string()))
+    }
+
     // get the graph
     // FIXME: get a non-existing graph will return an empty string!
     pub async fn get_graph(&self, name: &str) -> Result<types::Graph> {
@@ -192,9 +212,8 @@ impl SyncClient {
         let resp = self
             .client
             .post(url_base().to_owned() + "get_graph")
-            .body(payload.to_string())
+            .json(&payload)
             .bearer_auth(&self.auth_token)
-            .header("Content-Type", "application/octet-stream")
             .send()
             .await?
             .error_for_status()?;
@@ -211,9 +230,8 @@ impl SyncClient {
         let resp = self
             .client
             .post(url_base().to_owned() + "get_graph")
-            .body(payload.to_string())
+            .json(&payload)
             .bearer_auth(&self.auth_token)
-            .header("Content-Type", "application/octet-stream")
             .send()
             .await?
             .error_for_status()?;
@@ -230,7 +248,6 @@ impl SyncClient {
             .client
             .post(url_base().to_owned() + "list_graphs")
             .bearer_auth(&self.auth_token)
-            .header("Content-Type", "application/octet-stream")
             .send()
             .await?;
 
@@ -247,9 +264,8 @@ impl SyncClient {
         let resp = self
             .client
             .post(url_base().to_owned() + "get_all_files")
-            .body(payload.to_string())
+            .json(&payload)
             .bearer_auth(&self.auth_token)
-            .header("Content-Type", "application/octet-stream")
             .send()
             .await?;
 
@@ -276,9 +292,8 @@ impl SyncClient {
         let resp = self
             .client
             .post(url_base().to_owned() + "get_files")
-            .body(payload.to_string())
+            .json(&payload)
             .bearer_auth(&self.auth_token)
-            .header("Content-Type", "application/octet-stream")
             .send()
             .await?;
 
@@ -299,9 +314,8 @@ impl SyncClient {
         let resp = self
             .client
             .post(url_base().to_owned() + "get_version_files")
-            .body(payload.to_string())
+            .json(&payload)
             .bearer_auth(&self.auth_token)
-            .header("Content-Type", "application/octet-stream")
             .send()
             .await?;
         let result: serde_json::Value = resp.json().await?;
@@ -312,12 +326,13 @@ impl SyncClient {
 
     // expire after 1h
     pub async fn get_temp_credential(&self) -> Result<TempCredential> {
+        log::info!("get temp credentials");
+
         let resp = self
             .client
             .post(url_base().to_owned() + "get_temp_credential")
             .body("")
             .bearer_auth(&self.auth_token)
-            .header("Content-Type", "application/octet-stream")
             .send()
             .await?
             .error_for_status()?;
@@ -327,7 +342,7 @@ impl SyncClient {
         credential.s3_prefix = credential
             .s3_prefix
             .strip_prefix(bucket())
-            .unwrap()
+            .unwrap_or(&credential.s3_prefix)
             .trim_start_matches('/')
             .to_owned()
             + "/";
@@ -390,22 +405,24 @@ impl SyncClient {
     where
         F: Fn(usize, usize) + Send + Sync + 'static,
     {
-        use s3_presign::Bucket;
-        use s3_presign::Credentials;
-
         let credentials = self.credentials.as_ref().unwrap();
+        let credentials = s3::creds::Credentials::new(
+            Some(&credentials.access_key_id),
+            Some(&credentials.secret_key),
+            None,
+            Some(&credentials.session_token),
+            None,
+        ).map_err(|e| SyncError::Custom(e.to_string()))?;
+        let txnid = self.get_txid().await?;
+        let key = format!("{}{:05}-{}", self.s3_prefix.to_owned().unwrap(), txnid, random_string(12));
 
-        let credentials = Credentials::new(
-            credentials.access_key_id.clone(),
-            credentials.secret_key.clone(),
-            Some(credentials.session_token.clone()),
-        );
-        let bucket = Bucket::new(region(), bucket());
+        let region = region().parse().unwrap();
+        let bucket = s3::Bucket::new(bucket(), region, credentials)
+            .map_err(|e| SyncError::Custom(format!("failed to init bucket {:?}", e)))?.with_path_style();
 
-        let key = self.s3_prefix.clone().unwrap() + &*random_string(12);
+        log::info!("bucket: {}", bucket.url());
 
-        let presign_url = s3_presign::put(&credentials, &bucket, &key, 60 * 10)
-            .ok_or(SyncError::Custom("can not generate presign url".to_owned()))?;
+        let presign_url = bucket.presign_put(key.clone(), 60 * 10, None).map_err(|_| SyncError::Custom("can not generate presign url".to_owned()))?;
 
         let content = content.to_owned().to_vec();
         let content_size = content.len();
@@ -471,9 +488,8 @@ impl SyncClient {
         let resp = self
             .client
             .post(url_base().to_owned() + "update_files")
-            .body(payload.to_string())
+            .json(&payload)
             .bearer_auth(&self.auth_token)
-            .header("Content-Type", "application/octet-stream")
             .send()
             .await?;
 
@@ -501,9 +517,8 @@ impl SyncClient {
         let resp = self
             .client
             .post(url_base().to_owned() + "delete_files")
-            .body(payload.to_string())
+            .json(&payload)
             .bearer_auth(&self.auth_token)
-            .header("Content-Type", "application/octet-stream")
             .send()
             .await?;
 
@@ -528,9 +543,8 @@ impl SyncClient {
         let resp = self
             .client
             .post(url_base().to_owned() + "get_diff")
-            .body(payload.to_string())
+            .json(&payload)
             .bearer_auth(&self.auth_token)
-            .header("Content-Type", "application/octet-stream")
             .send()
             .await?;
 
@@ -561,9 +575,8 @@ impl SyncClient {
         let resp = self
             .client
             .post(url_base().to_owned() + "rename_file")
-            .body(payload.to_string())
+            .json(&payload)
             .bearer_auth(&self.auth_token)
-            .header("Content-Type", "application/octet-stream")
             .send()
             .await?
             .error_for_status()?;
